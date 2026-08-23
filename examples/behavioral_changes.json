@@ -1,0 +1,9 @@
+[
+  {
+    "symbol": "payment_sdk.client.PaymentClient.create_payment",
+    "description": "Declines now raise PaymentDeclined instead of returning status=declined",
+    "severity": "85",
+    "source": "vendor migration guide"
+  }
+]
+

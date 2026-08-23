@@ -1,0 +1,11 @@
+{
+  "symbols": {
+    "payment_sdk.client.PaymentClient.capture": "payment_sdk.client.PaymentClient.authorize"
+  },
+  "parameters": {
+    "payment_sdk.client.PaymentClient.create_payment": {
+      "amount": "amount_cents"
+    }
+  }
+}
+
