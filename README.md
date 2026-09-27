@@ -129,3 +129,7 @@ tests/             # unit and end-to-end coverage
 
 Read [PLAN.md](PLAN.md) for phase status and [docs/architecture.md](docs/architecture.md) for the
 component model.
+
+## License
+
+CanaryGraph is released under the [MIT License](LICENSE).
