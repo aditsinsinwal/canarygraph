@@ -27,6 +27,7 @@ dev = [
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<1",
+  "pytest-cov>=6,<8",
   "ruff>=0.9,<1",
   "types-networkx>=3.4,<4",
 ]
@@ -38,9 +39,18 @@ canarygraph = "canarygraph.cli:app"
 where = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra --strict-config --strict-markers"
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["canarygraph"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 75
 
 [tool.ruff]
 target-version = "py312"

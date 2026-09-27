@@ -6,6 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /workspace
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY alembic.ini ./
+COPY alembic ./alembic
 RUN pip install --no-cache-dir .
 
 RUN useradd --create-home --uid 10001 canarygraph
@@ -13,4 +15,3 @@ USER canarygraph
 
 EXPOSE 8000
 CMD ["uvicorn", "canarygraph.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
-

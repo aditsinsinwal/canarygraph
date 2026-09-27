@@ -77,6 +77,11 @@ class ApiDiffEngine:
         for name, old_function in old_functions.items():
             mapped = renames.symbols.get(name)
             new_function = new_functions.get(name)
+            mapped_owner = (
+                renames.symbols.get(old_function.owner_class) if old_function.owner_class else None
+            )
+            if new_function is None and mapped_owner:
+                new_function = new_functions.get(f"{mapped_owner}.{old_function.signature.name}")
             if new_function is None and mapped:
                 new_function = new_functions.get(mapped)
                 if new_function:
@@ -97,9 +102,10 @@ class ApiDiffEngine:
                         )
                     )
             if new_function is None:
-                owner_removed = (
+                owner_removed = bool(
                     old_function.owner_class in old_classes
                     and old_function.owner_class not in new_classes
+                    and not (mapped_owner and mapped_owner in new_classes)
                 )
                 if not owner_removed:
                     kind = (
@@ -116,13 +122,21 @@ class ApiDiffEngine:
             changes.extend(self._signature_changes(name, old_function, new_function, renames))
 
         for item in behavioral_changes or []:
-            symbol = item["symbol"]
+            symbol = item.get("symbol", "").strip()
+            if not symbol:
+                raise ValueError("Every behavioral change requires a non-empty symbol")
+            try:
+                severity = int(item.get("severity", "80"))
+            except ValueError as exc:
+                raise ValueError("Behavioral change severity must be an integer") from exc
+            if not 0 <= severity <= 100:
+                raise ValueError("Behavioral change severity must be between 0 and 100")
             changes.append(
                 self._change(
                     ChangeKind.BEHAVIORAL_CHANGE,
                     symbol,
                     item.get("description", "Configured behavioral contract changed"),
-                    int(item.get("severity", "80")),
+                    severity,
                     metadata=tuple(sorted((str(k), str(v)) for k, v in item.items())),
                 )
             )

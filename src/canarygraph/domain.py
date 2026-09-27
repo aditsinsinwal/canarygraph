@@ -130,6 +130,8 @@ class CallSite:
     location: SourceLocation
     positional_arguments: int = 0
     keyword_arguments: tuple[str, ...] = ()
+    has_star_arguments: bool = False
+    has_star_keywords: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +143,13 @@ class WebEndpoint:
 
 
 @dataclass(frozen=True, slots=True)
+class BackgroundJob:
+    function: str
+    framework: str
+    decorator: str
+
+
+@dataclass(frozen=True, slots=True)
 class PythonFunction:
     qualified_name: str
     signature: FunctionSignature
@@ -148,6 +157,8 @@ class PythonFunction:
     calls: tuple[CallSite, ...] = ()
     local_types: tuple[tuple[str, str], ...] = ()
     endpoint: WebEndpoint | None = None
+    background_job: BackgroundJob | None = None
+    is_test: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +178,8 @@ class PythonModule:
     imports: tuple[ImportBinding, ...] = ()
     functions: tuple[PythonFunction, ...] = ()
     classes: tuple[PythonClass, ...] = ()
+    global_types: tuple[tuple[str, str], ...] = ()
+    explicit_exports: tuple[str, ...] = ()
 
     @property
     def all_functions(self) -> tuple[PythonFunction, ...]:
@@ -211,6 +224,7 @@ class ApiVersion:
     version: str
     functions: tuple[ApiFunction, ...] = ()
     classes: tuple[ApiClass, ...] = ()
+    aliases: tuple[tuple[str, str], ...] = ()
 
     @property
     def function_index(self) -> dict[str, ApiFunction]:
@@ -263,6 +277,8 @@ class BlastRadius:
     affected_modules: tuple[str, ...] = ()
     affected_endpoints: tuple[WebEndpoint, ...] = ()
     paths_to_usage: tuple[tuple[str, ...], ...] = ()
+    affected_background_jobs: tuple[BackgroundJob, ...] = ()
+    affected_tests: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +311,7 @@ class ValidationResult:
     type_check_succeeded: bool | None = None
     tests_succeeded: bool | None = None
     output: str = ""
+    static_check_succeeded: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

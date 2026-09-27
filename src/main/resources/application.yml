@@ -1,9 +1,0 @@
-spring:
-    application:
-        name: canarygraph
-
-logging:
-    structured:
-        format:
-            console: ecs
-

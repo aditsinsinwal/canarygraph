@@ -34,3 +34,44 @@ def test_parser_supports_async_and_keyword_only(tmp_path: Path) -> None:
 
     assert signature.is_async
     assert signature.render() == "async run(a: int, /, *, b: str = 'x') -> bool"
+
+
+def test_parser_extracts_globals_exports_jobs_parameters_and_tests(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    tests = tmp_path / "tests"
+    package.mkdir()
+    tests.mkdir()
+    (package / "__init__.py").write_text("from .worker import run\n\n__all__ = ['run']\n")
+    (package / "worker.py").write_text(
+        "class Client:\n"
+        "    pass\n\n"
+        "client = Client()\n\n"
+        "@dramatiq.actor\n"
+        "def run(value: Client):\n"
+        "    return value\n"
+    )
+    (tests / "test_worker.py").write_text("def test_run():\n    pass\n")
+
+    modules = PythonRepositoryParser().parse_repository(SourceScanner().scan(tmp_path))
+    init = next(module for module in modules if module.name == "package")
+    worker = next(module for module in modules if module.name == "package.worker")
+    test_module = next(module for module in modules if module.name == "tests.test_worker")
+
+    assert init.explicit_exports == ("run",)
+    assert worker.global_types == (("client", "Client"),)
+    assert dict(worker.functions[0].local_types)["value"] == "Client"
+    assert worker.functions[0].background_job is not None
+    assert test_module.functions[0].is_test
+
+
+def test_parser_records_starred_call_uncertainty(tmp_path: Path) -> None:
+    source = tmp_path / "calls.py"
+    source.write_text(
+        "def invoke(client, args, kwargs):\n    return client.call(*args, **kwargs)\n"
+    )
+
+    module = PythonRepositoryParser().parse_repository(SourceScanner().scan(tmp_path))[0]
+    call = module.functions[0].calls[0]
+
+    assert call.has_star_arguments
+    assert call.has_star_keywords

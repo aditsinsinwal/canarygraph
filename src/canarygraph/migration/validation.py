@@ -22,10 +22,30 @@ class ValidationPipeline:
         repository: str | Path,
         patches: tuple[MigrationPatch, ...],
         *,
+        run_ruff: bool = False,
         run_mypy: bool = False,
         run_tests: bool = False,
     ) -> ValidationResult:
         root = Path(repository).resolve()
+        if not root.is_dir():
+            return ValidationResult(
+                MigrationStatus.UNSUPPORTED,
+                False,
+                output=f"Repository is not a directory: {root}",
+            )
+        if not patches:
+            return ValidationResult(
+                MigrationStatus.UNSUPPORTED,
+                False,
+                output="Migration has no source patches to validate",
+            )
+        escaped_symlink = self._external_symlink(root)
+        if escaped_symlink:
+            return ValidationResult(
+                MigrationStatus.UNSUPPORTED,
+                False,
+                output=f"Repository contains a symlink escaping its root: {escaped_symlink}",
+            )
         for patch in patches:
             try:
                 ast.parse(patch.after, filename=patch.path)
@@ -50,8 +70,21 @@ class ValidationPipeline:
             compile_result = self._run([sys.executable, "-m", "compileall", "-q", "."], isolated)
             if compile_result.returncode:
                 return ValidationResult(
-                    MigrationStatus.PARSE_FAILED, False, output=compile_result.stdout
+                    MigrationStatus.PARSE_FAILED,
+                    False,
+                    output=self._output(compile_result),
                 )
+            static_success: bool | None = None
+            if run_ruff:
+                result = self._run([sys.executable, "-m", "ruff", "check", "."], isolated)
+                static_success = result.returncode == 0
+                if not static_success:
+                    return ValidationResult(
+                        MigrationStatus.TYPE_CHECK_FAILED,
+                        True,
+                        output=self._output(result),
+                        static_check_succeeded=False,
+                    )
             mypy_success: bool | None = None
             if run_mypy:
                 result = self._run([sys.executable, "-m", "mypy", "."], isolated)
@@ -61,7 +94,8 @@ class ValidationPipeline:
                         MigrationStatus.TYPE_CHECK_FAILED,
                         True,
                         False,
-                        output=result.stdout,
+                        output=self._output(result),
+                        static_check_succeeded=static_success,
                     )
             test_success: bool | None = None
             if run_tests:
@@ -73,7 +107,8 @@ class ValidationPipeline:
                         True,
                         mypy_success,
                         False,
-                        result.stdout,
+                        self._output(result),
+                        static_success,
                     )
         return ValidationResult(
             MigrationStatus.VALIDATED,
@@ -81,7 +116,23 @@ class ValidationPipeline:
             mypy_success,
             test_success,
             "Validation completed successfully",
+            static_success,
         )
+
+    @staticmethod
+    def _external_symlink(root: Path) -> Path | None:
+        for path in root.rglob("*"):
+            if not path.is_symlink():
+                continue
+            try:
+                path.resolve().relative_to(root)
+            except (OSError, ValueError):
+                return path
+        return None
+
+    @staticmethod
+    def _output(result: subprocess.CompletedProcess[str]) -> str:
+        return (result.stdout + result.stderr)[-20_000:]
 
     def _run(self, command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         try:
@@ -95,7 +146,10 @@ class ValidationPipeline:
                 env={
                     "PATH": os.pathsep.join(
                         [str(Path(sys.executable).parent), "/usr/local/bin", "/usr/bin", "/bin"]
-                    )
+                    ),
+                    "PYTHONNOUSERSITE": "1",
+                    "PYTHONHASHSEED": "0",
+                    "LANG": "C.UTF-8",
                 },
             )
         except subprocess.TimeoutExpired as exc:

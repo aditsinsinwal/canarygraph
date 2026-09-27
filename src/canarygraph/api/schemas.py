@@ -18,6 +18,7 @@ class AnalysisCreate(BaseModel):
     symbol_renames: dict[str, str] = Field(default_factory=dict)
     parameter_renames: dict[str, dict[str, str]] = Field(default_factory=dict)
     behavioral_fixture: str | None = None
+    include_private: bool = False
 
     @field_validator("repository", "old_api", "new_api", "behavioral_fixture")
     @classmethod
@@ -31,6 +32,7 @@ class AnalysisCreated(BaseModel):
 
 
 class ValidationRequest(BaseModel):
+    run_ruff: bool = False
     run_mypy: bool = False
     run_tests: bool = False
 

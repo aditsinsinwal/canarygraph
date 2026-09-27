@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import libcst as cst
+from libcst.helpers import get_full_name_for_node
 from libcst.metadata import MetadataWrapper, PositionProvider
 
 from canarygraph.domain import ApiUsage, BreakingChange, ChangeKind, MigrationPatch
@@ -15,39 +16,87 @@ from canarygraph.domain import ApiUsage, BreakingChange, ChangeKind, MigrationPa
 class _CallSiteTransformer(cst.CSTTransformer):
     METADATA_DEPENDENCIES = (PositionProvider,)
 
-    def __init__(self, change: BreakingChange, lines: set[int]) -> None:
+    def __init__(self, change: BreakingChange, line_expressions: dict[int, set[str]]) -> None:
         self.change = change
-        self.lines = lines
+        self.line_expressions = line_expressions
+        self._matching_import_from = False
 
     def _targeted(self, node: cst.CSTNode) -> bool:
-        return self.get_metadata(PositionProvider, node).start.line in self.lines
+        return self.get_metadata(PositionProvider, node).start.line in self.line_expressions
+
+    def _rename_parts(self) -> tuple[str, str, str, str] | None:
+        if (
+            self.change.kind
+            not in {
+                ChangeKind.FUNCTION_RENAMED,
+                ChangeKind.METHOD_RENAMED,
+                ChangeKind.CLASS_RENAMED,
+            }
+            or not self.change.replacement
+        ):
+            return None
+        old_owner, old_leaf = self.change.symbol.rsplit(".", 1)
+        new_owner, new_leaf = self.change.replacement.rsplit(".", 1)
+        return old_owner, old_leaf, new_owner, new_leaf
+
+    def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
+        parts = self._rename_parts()
+        module = get_full_name_for_node(node.module) if node.module else None
+        self._matching_import_from = bool(parts and module == parts[0])
 
     def leave_ImportAlias(
         self, original_node: cst.ImportAlias, updated_node: cst.ImportAlias
     ) -> cst.ImportAlias:
-        if self.change.kind != ChangeKind.CLASS_RENAMED or not self.change.replacement:
+        parts = self._rename_parts()
+        if not parts:
             return updated_node
-        old_name = self.change.symbol.rsplit(".", 1)[-1]
-        new_name = self.change.replacement.rsplit(".", 1)[-1]
-        if isinstance(updated_node.name, cst.Name) and updated_node.name.value == old_name:
+        old_owner, old_name, new_owner, new_name = parts
+        imported_name = get_full_name_for_node(updated_node.name)
+        if self._matching_import_from and imported_name == old_name:
             return updated_node.with_changes(name=cst.Name(new_name))
+        if not self._matching_import_from and imported_name == old_owner:
+            replacement = cst.parse_expression(new_owner)
+            if isinstance(replacement, (cst.Name, cst.Attribute)):
+                return updated_node.with_changes(name=replacement)
+        return updated_node
+
+    def leave_ImportFrom(
+        self, original_node: cst.ImportFrom, updated_node: cst.ImportFrom
+    ) -> cst.ImportFrom:
+        parts = self._rename_parts()
+        matches = self._matching_import_from
+        self._matching_import_from = False
+        if not parts or not matches or parts[0] == parts[2]:
+            return updated_node
+        replacement = cst.parse_expression(parts[2])
+        if isinstance(replacement, (cst.Name, cst.Attribute)):
+            return updated_node.with_changes(module=replacement)
         return updated_node
 
     def leave_Call(self, original_node: cst.Call, updated_node: cst.Call) -> cst.Call:
         if not self._targeted(original_node):
             return updated_node
+        line = self.get_metadata(PositionProvider, original_node).start.line
+        expression_leaves = {
+            expression.rsplit(".", 1)[-1] for expression in self.line_expressions.get(line, set())
+        }
         if self.change.kind in {ChangeKind.FUNCTION_RENAMED, ChangeKind.METHOD_RENAMED}:
+            old_name = self.change.symbol.rsplit(".", 1)[-1]
             replacement = (self.change.replacement or "").rsplit(".", 1)[-1]
-            if isinstance(updated_node.func, cst.Attribute):
+            if isinstance(updated_node.func, cst.Attribute) and old_name in expression_leaves:
                 return updated_node.with_changes(
                     func=updated_node.func.with_changes(attr=cst.Name(replacement))
                 )
-            if isinstance(updated_node.func, cst.Name):
+            if isinstance(updated_node.func, cst.Name) and old_name in expression_leaves:
                 return updated_node.with_changes(func=cst.Name(replacement))
         if self.change.kind == ChangeKind.CLASS_RENAMED and self.change.replacement:
             old_name = self.change.symbol.rsplit(".", 1)[-1]
             new_name = self.change.replacement.rsplit(".", 1)[-1]
-            if isinstance(updated_node.func, cst.Name) and updated_node.func.value == old_name:
+            if (
+                isinstance(updated_node.func, cst.Name)
+                and updated_node.func.value == old_name
+                and old_name in expression_leaves
+            ):
                 return updated_node.with_changes(func=cst.Name(new_name))
         if self.change.kind == ChangeKind.PARAMETER_RENAMED:
             old_parameter = self.change.parameter
@@ -90,15 +139,17 @@ class SourceTransformer:
     def transform(
         self, change: BreakingChange, usages: tuple[ApiUsage, ...]
     ) -> tuple[MigrationPatch, ...]:
-        grouped: dict[str, set[int]] = defaultdict(set)
+        grouped: dict[str, dict[int, set[str]]] = defaultdict(lambda: defaultdict(set))
         for usage in usages:
-            grouped[usage.call_site.location.path].add(usage.call_site.location.line)
+            grouped[usage.call_site.location.path][usage.call_site.location.line].add(
+                usage.call_site.expression
+            )
         patches: list[MigrationPatch] = []
-        for path_text, lines in sorted(grouped.items()):
+        for path_text, line_expressions in sorted(grouped.items()):
             path = Path(path_text)
             before = path.read_text(encoding="utf-8")
             wrapper = MetadataWrapper(cst.parse_module(before))
-            after = wrapper.visit(_CallSiteTransformer(change, lines)).code
+            after = wrapper.visit(_CallSiteTransformer(change, line_expressions)).code
             if before == after:
                 continue
             diff = "".join(

@@ -19,6 +19,7 @@ from canarygraph.compatibility import (
     RenameMap,
     RiskScorer,
     SdkSurfaceExtractor,
+    usage_is_affected,
 )
 from canarygraph.domain import (
     AnalysisMetrics,
@@ -39,13 +40,13 @@ class AnalysisRequest:
     new_version: str = "new"
     renames: RenameMap | None = None
     behavioral_fixture: str | None = None
+    include_private: bool = False
 
 
 class AnalysisService:
     def __init__(self) -> None:
         self.scanner = SourceScanner()
         self.parser = PythonRepositoryParser()
-        self.sdk = SdkSurfaceExtractor()
         self.diff = ApiDiffEngine()
         self.usage = ExternalUsageResolver()
         self.blast = BlastRadiusAnalyzer()
@@ -64,16 +65,24 @@ class AnalysisService:
         graph = CallGraph.build(modules)
         graph_ms = self._elapsed(graph_started)
 
-        old_api = self.sdk.extract(
+        sdk_extractor = SdkSurfaceExtractor(include_private=request.include_private)
+        old_api = sdk_extractor.extract(
             request.old_api, library=request.library, version=request.old_version
         )
-        new_api = self.sdk.extract(
+        new_api = sdk_extractor.extract(
             request.new_api, library=request.library, version=request.new_version
         )
         known_symbols = set(old_api.function_index) | set(new_api.function_index)
         known_symbols.update(item.qualified_name for item in old_api.classes)
         known_symbols.update(item.qualified_name for item in new_api.classes)
-        usages = self.usage.resolve(modules, library=request.library, known_symbols=known_symbols)
+        aliases = {**dict(old_api.aliases), **dict(new_api.aliases)}
+        known_symbols.update(aliases)
+        usages = self.usage.resolve(
+            modules,
+            library=request.library,
+            known_symbols=known_symbols,
+            aliases=aliases,
+        )
 
         behavioral = (
             self.diff.load_behavioral_fixture(request.behavioral_fixture)
@@ -93,7 +102,11 @@ class AnalysisService:
         findings: list[CompatibilityFinding] = []
         warnings: list[str] = []
         for change in changes:
-            relevant = tuple(item for item in usages if item.symbol == change.symbol)
+            relevant = tuple(
+                item
+                for item in usages
+                if item.symbol == change.symbol and usage_is_affected(change, item)
+            )
             radius = self.blast.analyze(change, relevant, graph, modules)
             plan = self.planner.plan(change)
             if plan.status == MigrationStatus.AVAILABLE:

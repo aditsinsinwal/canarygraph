@@ -42,6 +42,11 @@ def render_text(report: CompatibilityReport) -> str:
                 + ", ".join(
                     f"{item.method} {item.path}" for item in finding.blast_radius.affected_endpoints
                 ),
+                "Affected background jobs: "
+                + ", ".join(
+                    item.function for item in finding.blast_radius.affected_background_jobs
+                ),
+                "Affected tests: " + ", ".join(finding.blast_radius.affected_tests),
                 f"Migration: {finding.migration.status.value}",
                 f"Reason: {finding.migration.reason}",
             ]

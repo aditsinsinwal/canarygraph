@@ -32,10 +32,17 @@ class BlastRadiusAnalyzer:
             for function in module.all_functions
         }
         endpoints = []
+        background_jobs = []
+        affected_tests = []
         for name in all_affected:
-            endpoint = functions[name].endpoint if name in functions else None
+            affected_function = functions.get(name)
+            endpoint = affected_function.endpoint if affected_function else None
             if endpoint is not None:
                 endpoints.append(endpoint)
+            if affected_function and affected_function.background_job:
+                background_jobs.append(affected_function.background_job)
+            if affected_function and affected_function.is_test:
+                affected_tests.append(name)
         endpoints_tuple = tuple(sorted(endpoints, key=lambda item: (item.path, item.method)))
         class_names = {
             cls.qualified_name
@@ -51,10 +58,12 @@ class BlastRadiusAnalyzer:
             )
         }
         return BlastRadius(
-            tuple(sorted(direct)),
-            tuple(sorted(transitive)),
-            tuple(sorted(class_names)),
-            tuple(sorted(module_names)),
-            endpoints_tuple,
-            tuple(sorted(paths)),
+            direct_functions=tuple(sorted(direct)),
+            transitive_functions=tuple(sorted(transitive)),
+            affected_classes=tuple(sorted(class_names)),
+            affected_modules=tuple(sorted(module_names)),
+            affected_endpoints=endpoints_tuple,
+            paths_to_usage=tuple(sorted(paths)),
+            affected_background_jobs=tuple(sorted(background_jobs, key=lambda item: item.function)),
+            affected_tests=tuple(sorted(affected_tests)),
         )

@@ -13,18 +13,38 @@ services:
     volumes:
       - canarygraph-postgres:/var/lib/postgresql/data
 
+  migrate:
+    build: .
+    environment:
+      CANARYGRAPH_DATABASE_URL: postgresql+psycopg://canarygraph:canarygraph@postgres:5432/canarygraph
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: .
     environment:
       CANARYGRAPH_DATABASE_URL: postgresql+psycopg://canarygraph:canarygraph@postgres:5432/canarygraph
       CANARYGRAPH_ALLOWED_REPOSITORY_ROOTS: /workspace/examples
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     volumes:
       - ./examples:/workspace/examples:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
 volumes:
   canarygraph-postgres:

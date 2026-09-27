@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from canarygraph.api.schemas import AnalysisCreate, AnalysisCreated, ValidationRequest
@@ -70,6 +71,11 @@ def create_app(database: Database | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/health/ready")
+    def ready(session: Session = Depends(session_dependency)) -> dict[str, str]:
+        session.execute(text("SELECT 1"))
+        return {"status": "ready"}
+
     @app.post(
         "/api/v1/analyses", response_model=AnalysisCreated, status_code=status.HTTP_201_CREATED
     )
@@ -87,6 +93,7 @@ def create_app(database: Database | None = None) -> FastAPI:
                 payload.new_version,
                 RenameMap(payload.symbol_renames, payload.parameter_renames),
                 payload.behavioral_fixture,
+                payload.include_private,
             )
         )
         store.save(report)
@@ -145,6 +152,7 @@ def create_app(database: Database | None = None) -> FastAPI:
         result = ValidationPipeline().validate(
             record.repository,
             patches,
+            run_ruff=payload.run_ruff,
             run_mypy=payload.run_mypy,
             run_tests=payload.run_tests,
         )

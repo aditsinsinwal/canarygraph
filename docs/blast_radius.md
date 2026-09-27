@@ -1,8 +1,8 @@
 # Blast radius and risk
 
 For each changed SDK symbol, CanaryGraph selects direct usage callers, walks graph predecessors, and
-projects affected functions onto classes, modules, and detected HTTP endpoints. It records shortest
-paths so every impact statement is explainable.
+projects affected functions onto classes, modules, detected HTTP endpoints, Celery/Dramatiq/RQ-style
+background jobs, and tests. It records shortest paths so every impact statement is explainable.
 
 Risk is capped at 100:
 
@@ -16,4 +16,3 @@ round(change severity × 0.45)
 
 Levels are LOW 0–34, MEDIUM 35–64, HIGH 65–84, and CRITICAL 85–100. The report includes each
 component; no learned model or hidden weight is involved.
-

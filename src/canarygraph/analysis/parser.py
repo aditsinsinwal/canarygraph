@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from canarygraph.domain import (
+    BackgroundJob,
     CallSite,
     FunctionSignature,
     ImportBinding,
@@ -62,14 +63,23 @@ def _dotted(node: ast.AST) -> str | None:
 class SourceScanner:
     """Discover Python files without following symlinks outside the repository."""
 
-    def __init__(self, *, max_file_bytes: int = 2_000_000) -> None:
+    def __init__(
+        self,
+        *,
+        max_file_bytes: int = 2_000_000,
+        max_files: int = 10_000,
+        max_total_bytes: int = 100_000_000,
+    ) -> None:
         self.max_file_bytes = max_file_bytes
+        self.max_files = max_files
+        self.max_total_bytes = max_total_bytes
 
     def scan(self, root: str | Path) -> ProjectRepository:
         base = Path(root).expanduser().resolve()
         if not base.is_dir():
             raise InvalidRepositoryError(f"Repository is not a directory: {base}")
         files: list[SourceFile] = []
+        total_bytes = 0
         for path in base.rglob("*.py"):
             if any(part in IGNORED_DIRECTORIES for part in path.parts):
                 continue
@@ -81,6 +91,15 @@ class SourceScanner:
             size = path.stat().st_size
             if size <= self.max_file_bytes:
                 files.append(SourceFile(str(path), size))
+                total_bytes += size
+            if len(files) > self.max_files:
+                raise InvalidRepositoryError(
+                    f"Repository exceeds the {self.max_files} Python-file safety limit"
+                )
+            if total_bytes > self.max_total_bytes:
+                raise InvalidRepositoryError(
+                    f"Repository exceeds the {self.max_total_bytes}-byte source safety limit"
+                )
         return ProjectRepository(str(base), tuple(sorted(files, key=lambda item: item.path)))
 
 
@@ -100,10 +119,16 @@ class _FunctionVisitor(ast.NodeVisitor):
                     caller=self.caller,
                     expression=expression,
                     location=SourceLocation(self.path, node.lineno, node.col_offset),
-                    positional_arguments=len(node.args),
+                    positional_arguments=sum(
+                        not isinstance(argument, ast.Starred) for argument in node.args
+                    ),
                     keyword_arguments=tuple(
                         keyword.arg for keyword in node.keywords if keyword.arg is not None
                     ),
+                    has_star_arguments=any(
+                        isinstance(argument, ast.Starred) for argument in node.args
+                    ),
+                    has_star_keywords=any(keyword.arg is None for keyword in node.keywords),
                 )
             )
         self.generic_visit(node)
@@ -147,6 +172,8 @@ class PythonRepositoryParser:
 
         module_name = relative_module(root, path)
         imports = tuple(self._imports(tree, path))
+        global_types = self._global_types(tree)
+        explicit_exports = self._explicit_exports(tree)
         functions: list[PythonFunction] = []
         classes: list[PythonClass] = []
         for node in tree.body:
@@ -154,7 +181,48 @@ class PythonRepositoryParser:
                 functions.append(self._function(node, module_name, path))
             elif isinstance(node, ast.ClassDef):
                 classes.append(self._class(node, module_name, path))
-        return PythonModule(module_name, str(path), imports, tuple(functions), tuple(classes))
+        return PythonModule(
+            module_name,
+            str(path),
+            imports,
+            tuple(functions),
+            tuple(classes),
+            global_types,
+            explicit_exports,
+        )
+
+    def _global_types(self, tree: ast.Module) -> tuple[tuple[str, str], ...]:
+        types: dict[str, str] = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                type_name = _dotted(node.value.func)
+                if type_name:
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            types[target.id] = type_name
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                annotation = _text(node.annotation)
+                if annotation:
+                    types[node.target.id] = annotation
+        return tuple(sorted(types.items()))
+
+    def _explicit_exports(self, tree: ast.Module) -> tuple[str, ...]:
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if not any(
+                isinstance(target, ast.Name) and target.id == "__all__" for target in targets
+            ):
+                continue
+            value = node.value
+            if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+                return tuple(
+                    item.value
+                    for item in value.elts
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                )
+        return ()
 
     def _imports(self, tree: ast.Module, path: Path) -> Iterable[ImportBinding]:
         for node in tree.body:
@@ -187,7 +255,6 @@ class PythonRepositoryParser:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 function = self._function(item, class_name, path, is_method=True)
                 methods.append(function)
-                attribute_types.update(dict(function.local_types))
                 visitor = _FunctionVisitor(function.qualified_name, str(path))
                 for statement in item.body:
                     visitor.visit(statement)
@@ -217,14 +284,26 @@ class PythonRepositoryParser:
         for statement in node.body:
             visitor.visit(statement)
         signature = self._signature(node, is_method=is_method)
+        parameter_types = {
+            parameter.name: parameter.annotation
+            for parameter in signature.parameters
+            if parameter.annotation is not None
+        }
+        parameter_types.update(visitor.local_types)
         endpoint = self._endpoint(node.decorator_list, qualified_name)
+        background_job = self._background_job(node.decorator_list, qualified_name)
+        is_test = (
+            node.name.startswith("test_") or "tests" in path.parts or path.name.startswith("test_")
+        )
         return PythonFunction(
             qualified_name,
             signature,
             SourceLocation(str(path), node.lineno, node.col_offset),
             tuple(visitor.calls),
-            tuple(sorted(visitor.local_types.items())),
+            tuple(sorted(parameter_types.items())),
             endpoint,
+            background_job,
+            is_test,
         )
 
     def _signature(
@@ -305,4 +384,17 @@ class PythonRepositoryParser:
                 else:
                     method = "ANY"
                 return WebEndpoint(function, "Flask", method, route)
+        return None
+
+    def _background_job(self, decorators: list[ast.expr], function: str) -> BackgroundJob | None:
+        for decorator in decorators:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            name = _dotted(target) or ""
+            leaf = name.rsplit(".", 1)[-1]
+            if leaf == "actor" or name.startswith("dramatiq."):
+                return BackgroundJob(function, "Dramatiq", name)
+            if leaf in {"task", "shared_task"}:
+                return BackgroundJob(function, "Celery", name)
+            if leaf in {"job", "scheduled_job"}:
+                return BackgroundJob(function, "RQ/APScheduler", name)
         return None

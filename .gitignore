@@ -3,9 +3,12 @@
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+.coverage
+coverage.xml
 .venv/
 __pycache__/
 *.db
 *.egg-info/
 build/
 dist/
+target/

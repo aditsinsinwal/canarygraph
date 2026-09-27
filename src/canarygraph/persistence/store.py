@@ -7,7 +7,15 @@ from sqlalchemy.orm import Session
 
 from canarygraph.domain import CompatibilityReport
 from canarygraph.exceptions import AnalysisNotFoundError, FindingNotFoundError
-from canarygraph.persistence.models import AnalysisRecord, MigrationRecord, RepositoryRecord
+from canarygraph.persistence.models import (
+    AnalysisRecord,
+    ApiVersionRecord,
+    BlastRadiusRecord,
+    BreakingChangeRecord,
+    FindingRecord,
+    MigrationRecord,
+    RepositoryRecord,
+)
 
 
 class AnalysisStore:
@@ -31,6 +39,55 @@ class AnalysisStore:
             report=report.to_dict(),
         )
         self.session.add(record)
+        self.session.flush()
+        self.session.add_all(
+            [
+                ApiVersionRecord(
+                    analysis_id=report.id,
+                    role="OLD",
+                    library=report.library,
+                    version=report.old_version,
+                ),
+                ApiVersionRecord(
+                    analysis_id=report.id,
+                    role="NEW",
+                    library=report.library,
+                    version=report.new_version,
+                ),
+            ]
+        )
+        for change, payload in zip(report.changes, record.report["changes"], strict=True):
+            self.session.add(
+                BreakingChangeRecord(
+                    analysis_id=report.id,
+                    change_id=change.id,
+                    kind=change.kind.value,
+                    symbol=change.symbol,
+                    severity=change.severity,
+                    payload=payload,
+                )
+            )
+        for finding, payload in zip(report.findings, record.report["findings"], strict=True):
+            finding_record = FindingRecord(
+                analysis_id=report.id,
+                finding_id=finding.id,
+                change_id=finding.change.id,
+                risk_score=finding.risk.score,
+                risk_level=finding.risk.level.value,
+                payload=payload,
+            )
+            self.session.add(finding_record)
+            self.session.flush()
+            radius = finding.blast_radius
+            self.session.add(
+                BlastRadiusRecord(
+                    finding_record_id=finding_record.id,
+                    direct_count=len(radius.direct_functions),
+                    transitive_count=len(radius.transitive_functions),
+                    endpoint_count=len(radius.affected_endpoints),
+                    payload=payload["blast_radius"],
+                )
+            )
         self.session.commit()
         return record
 
@@ -41,13 +98,14 @@ class AnalysisStore:
         return record
 
     def finding(self, finding_id: str) -> tuple[AnalysisRecord, dict[str, object]]:
-        records = self.session.scalars(
-            select(AnalysisRecord).order_by(AnalysisRecord.created_at.desc())
+        finding = self.session.scalar(
+            select(FindingRecord)
+            .where(FindingRecord.finding_id == finding_id)
+            .order_by(FindingRecord.id.desc())
         )
-        for record in records:
-            for finding in record.report.get("findings", []):
-                if finding.get("id") == finding_id:
-                    return record, finding
+        if finding:
+            analysis = self.get(finding.analysis_id)
+            return analysis, finding.payload
         raise FindingNotFoundError(f"Finding {finding_id!r} does not exist")
 
     def save_migration(
